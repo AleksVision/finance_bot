@@ -561,13 +561,24 @@ class FinanceHandler:
             _, category_type, category = callback.data.split('_')
             user_id = callback.from_user.id
             
-            # TODO: Реализовать удаление категории в базе данных
-            await callback.message.edit_text(
-                f"❌ Категория '{category}' удалена\n\n"
-                "Выберите следующее действие:",
-                reply_markup=self.keyboard_factory.get_categories_keyboard(category_type)
-            )
-            await callback.answer(f"Категория {category} удалена")
+            # Пытаемся удалить категорию
+            result = await self.db.remove_user_category(user_id, category, category_type)
+            
+            if result:
+                await callback.message.edit_text(
+                    f"✅ Категория '{category}' удалена\n\n"
+                    "Выберите следующее действие:",
+                    reply_markup=self.keyboard_factory.get_categories_keyboard(category_type)
+                )
+                await callback.answer(f"Категория {category} удалена")
+            else:
+                await callback.message.edit_text(
+                    f"❌ Не удалось удалить категорию '{category}'\n\n"
+                    "Возможно, у вас есть транзакции с этой категорией.\n"
+                    "Сначала удалите или измените связанные транзакции.",
+                    reply_markup=self.keyboard_factory.get_categories_keyboard(category_type)
+                )
+                await callback.answer("Не удалось удалить категорию")
         except Exception as e:
             logger.error(f"Ошибка при удалении категории: {e}")
             await callback.answer("❌ Не удалось удалить категорию")

@@ -259,10 +259,11 @@ class FinanceDatabase:
                     ]
                     
                     for name, type_, icon in default_categories:
-                        await db.execute('''
-                            INSERT OR IGNORE INTO categories (name, type, icon, is_default) 
-                            VALUES (?, ?, ?, ?)
-                        ''', (name, type_, icon, True))
+                        await db.execute(
+                            "INSERT OR IGNORE INTO categories (name, type, icon, is_default) 
+                            VALUES (?, ?, ?, ?)",
+                            (name, type_, icon, True)
+                        )
                     
                     logger.info("Added default categories")
                     
@@ -1167,6 +1168,62 @@ class FinanceDatabase:
     async def get_user_categories(self, user_id, category_type=None):
         async with aiosqlite.connect(self.database_name) as db:
             query = 'SELECT * FROM user_categories WHERE user_id = ?'
+            params = [user_id]
+            
+            if category_type:
+                query += ' AND type = ?'
+                params.append(category_type)
+            
+            async with db.execute(query, params) as cursor:
+                return await cursor.fetchall()
+
+    async def remove_user_category(self, user_id, category_name, category_type):
+        """
+        Удаление пользовательской категории
+        
+        :param user_id: ID пользователя
+        :param category_name: Название категории
+        :param category_type: Тип категории (income/expense)
+        """
+        async with aiosqlite.connect(self.database_name) as db:
+            # Проверяем, можно ли удалить категорию
+            async with db.execute('''
+                SELECT COUNT(*) 
+                FROM transactions t
+                JOIN user_categories uc ON t.category_id = uc.id
+                WHERE uc.user_id = ? AND uc.name = ? AND uc.type = ?
+            ''', (user_id, category_name, category_type)) as cursor:
+                transaction_count = await cursor.fetchone()
+                
+                # Если есть транзакции с этой категорией, запрещаем удаление
+                if transaction_count[0] > 0:
+                    logger.warning(f"Нельзя удалить категорию {category_name}: есть связанные транзакции")
+                    return False
+            
+            # Удаляем категорию
+            await db.execute('''
+                DELETE FROM user_categories 
+                WHERE user_id = ? AND name = ? AND type = ?
+            ''', (user_id, category_name, category_type))
+            
+            await db.commit()
+            logger.info(f"Удалена категория {category_name} для пользователя {user_id}")
+            return True
+
+    async def get_user_custom_categories(self, user_id, category_type=None):
+        """
+        Получение пользовательских категорий
+        
+        :param user_id: ID пользователя
+        :param category_type: Тип категории (income/expense), опционально
+        :return: Список пользовательских категорий
+        """
+        async with aiosqlite.connect(self.database_name) as db:
+            query = '''
+                SELECT name, type 
+                FROM user_categories 
+                WHERE user_id = ? AND is_default = 0
+            '''
             params = [user_id]
             
             if category_type:

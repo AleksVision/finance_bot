@@ -6,6 +6,9 @@ from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from cachetools import TTLCache
+import matplotlib.pyplot as plt
+import io
+import numpy as np
 
 # Настройка логирования
 logging.basicConfig(
@@ -15,6 +18,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DATABASE_NAME = 'finance.db'
+
+CATEGORY_TRANSLATIONS = {
+    # Доходы
+    'salary': '💼 Зарплата',
+    'freelance': '💻 Фриланс',
+    'investments': '📈 Инвестиции', 
+    'other_income': '💰 Прочие доходы',
+    'gifts': '🎁 Подарки',
+    
+    # Расходы
+    'housing': '🏠 Жилье',
+    'transport': '🚗 Транспорт',
+    'electronics': '💻 Электроника',
+    'health': '🏥 Здоровье',
+    'other_expense': '💸 Прочие расходы'
+}
+
+def translate_category(category):
+    return CATEGORY_TRANSLATIONS.get(category, category)
 
 @dataclass
 class Transaction:
@@ -43,6 +65,32 @@ class CategoryStatistics:
     category: str
     type: str
     total: Decimal
+
+@dataclass
+class StatisticsResult:
+    total_income: Decimal
+    total_expense: Decimal
+    balance: Decimal
+    transactions: List[Transaction]
+    income_details: List[Dict[str, float]]
+    expense_details: List[Dict[str, float]]
+
+class DatabaseError(Exception):
+    """
+    База данных ошибок с дополнительным контекстом
+    
+    Этот класс используется для более детальной обработки ошибок базы данных,
+    позволяя сохранять оригинальную ошибку и предоставлять дополнительный контекст.
+    """
+    def __init__(self, message: str, original_error: Optional[Exception] = None):
+        """
+        Инициализация ошибки базы данных
+        
+        :param message: Описательное сообщение об ошибке
+        :param original_error: Оригинальное исключение, вызвавшее ошибку
+        """
+        super().__init__(message)
+        self.original_error = original_error
 
 class FinanceCache:
     """Класс для кэширования финансовых данных"""
@@ -104,94 +152,125 @@ class FinanceCache:
             for key in keys_to_remove:
                 cache.pop(key, None)
 
-class DatabaseError(Exception):
-    """База данных ошибок с дополнительным контекстом"""
-    def __init__(self, message: str, original_error: Optional[Exception] = None):
-        super().__init__(message)
-        self.original_error = original_error
-
 class FinanceDatabase:
     def __init__(self, database_name: str = DATABASE_NAME):
         self.database_name = database_name
         self.cache = FinanceCache()
 
-    async def init_db(self):
-        """Инициализация базы данных с новой схемой"""
+    async def init_db(self, force_recreate: bool = False):
+        """
+        Инициализация базы данных с новой схемой
+        
+        :param force_recreate: Принудительное пересоздание базы данных
+        """
         try:
+            # Проверяем существование базы данных
+            db_exists = os.path.exists(self.database_name)
+            
             logger.info(f"Initializing database: {self.database_name}")
-            async with aiosqlite.connect(self.database_name) as db:
-                # Включаем внешние ключи
-                await db.execute('PRAGMA foreign_keys = ON')
-                logger.info("Enabled foreign keys")
-                
-                # Создаем таблицу пользователей
-                await db.execute('''
-                    CREATE TABLE IF NOT EXISTS users (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        telegram_id INTEGER UNIQUE NOT NULL,
-                        username TEXT,
-                        first_name TEXT,
-                        last_name TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        settings_json TEXT DEFAULT '{}'
-                    )
-                ''')
-                logger.info("Created users table")
+            logger.info(f"Database exists: {db_exists}, Force recreate: {force_recreate}")
+            
+            # Если база не существует или принудительное пересоздание
+            if not db_exists or force_recreate:
+                async with aiosqlite.connect(self.database_name) as db:
+                    # Включаем внешние ключи
+                    await db.execute('PRAGMA foreign_keys = ON')
+                    logger.info("Enabled foreign keys")
+                    
+                    # Создаем таблицу пользователей
+                    await db.execute('''
+                        CREATE TABLE IF NOT EXISTS users (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            telegram_id INTEGER UNIQUE NOT NULL,
+                            username TEXT,
+                            first_name TEXT,
+                            last_name TEXT,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            settings_json TEXT DEFAULT '{}'
+                        )
+                    ''')
+                    logger.info("Created users table")
 
-                # Создаем таблицу категорий
-                await db.execute('''
-                    CREATE TABLE IF NOT EXISTS categories (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT NOT NULL,
-                        type TEXT NOT NULL,
-                        icon TEXT DEFAULT '📁',
-                        is_default BOOLEAN DEFAULT FALSE,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE(name, type)
-                    )
-                ''')
-                logger.info("Created categories table")
+                    # Создаем таблицу категорий
+                    await db.execute('''
+                        CREATE TABLE IF NOT EXISTS categories (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            name TEXT NOT NULL,
+                            type TEXT NOT NULL,
+                            icon TEXT DEFAULT '📁',
+                            is_default BOOLEAN DEFAULT FALSE,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(name, type)
+                        )
+                    ''')
+                    logger.info("Created categories table")
 
-                # Создаем улучшенную таблицу транзакций
-                await db.execute('''
-                    CREATE TABLE IF NOT EXISTS transactions (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER NOT NULL,
-                        type TEXT NOT NULL CHECK(type IN ('income', 'expense')),
-                        amount DECIMAL(10,2) NOT NULL CHECK(amount > 0),
-                        category_id INTEGER NOT NULL,
-                        description TEXT,
-                        date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-                        FOREIGN KEY(category_id) REFERENCES categories(id)
-                    )
-                ''')
-                logger.info("Created transactions table")
+                    # Создаем улучшенную таблицу транзакций
+                    await db.execute('''
+                        CREATE TABLE IF NOT EXISTS transactions (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id INTEGER NOT NULL,
+                            type TEXT NOT NULL CHECK(type IN ('income', 'expense')),
+                            amount DECIMAL(10,2) NOT NULL CHECK(amount > 0),
+                            category_id INTEGER NOT NULL,
+                            description TEXT,
+                            date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                            FOREIGN KEY(category_id) REFERENCES categories(id)
+                        )
+                    ''')
+                    logger.info("Created transactions table")
 
-                # Создаем триггер для обновления updated_at
-                await db.execute('''
-                    CREATE TRIGGER IF NOT EXISTS update_transaction_timestamp 
-                    AFTER UPDATE ON transactions
-                    BEGIN
-                        UPDATE transactions SET updated_at = CURRENT_TIMESTAMP
-                        WHERE id = NEW.id;
-                    END;
-                ''')
-                logger.info("Created transaction timestamp trigger")
+                    # Создаем триггер для обновления updated_at
+                    await db.execute('''
+                        CREATE TRIGGER IF NOT EXISTS update_transaction_timestamp 
+                        AFTER UPDATE ON transactions
+                        BEGIN
+                            UPDATE transactions SET updated_at = CURRENT_TIMESTAMP
+                            WHERE id = NEW.id;
+                        END;
+                    ''')
+                    logger.info("Created transaction timestamp trigger")
 
-                # Создаем индексы для оптимизации
-                await db.execute('CREATE INDEX IF NOT EXISTS idx_transactions_user_date ON transactions(user_id, date)')
-                await db.execute('CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions(category_id)')
-                logger.info("Created indexes")
-                
-                # Миграция данных из старой схемы, если она существует
-                await self._migrate_old_data(db)
-                
-                await db.commit()
-                logger.info(f"Database {self.database_name} initialized successfully")
-                
+                    # Создаем индексы для оптимизации
+                    await db.execute('CREATE INDEX IF NOT EXISTS idx_transactions_user_date ON transactions(user_id, date)')
+                    await db.execute('CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions(category_id)')
+                    logger.info("Created indexes")
+                    
+                    # Добавляем дефолтные категории
+                    default_categories = [
+                        # Доходы
+                        ('Зарплата', 'income', '💼'),
+                        ('Свободная деятельность', 'income', '💻'),
+                        ('Инвестиции', 'income', '📈'),
+                        ('Подарки', 'income', '🎁'),
+                        ('Другие доходы', 'income', '❓'),
+                        
+                        # Расходы
+                        ('Продукты', 'expense', '🛒'),
+                        ('Транспорт', 'expense', '🚇'),
+                        ('Жилье', 'expense', '🏠'),
+                        ('Развлечения', 'expense', '🍿'),
+                        ('Здоровье', 'expense', '💊'),
+                        ('Образование', 'expense', '📚'),
+                        ('Другие расходы', 'expense', '❓')
+                    ]
+                    
+                    for name, type_, icon in default_categories:
+                        await db.execute('''
+                            INSERT OR IGNORE INTO categories (name, type, icon, is_default) 
+                            VALUES (?, ?, ?, ?)
+                        ''', (name, type_, icon, True))
+                    
+                    logger.info("Added default categories")
+                    
+                    await db.commit()
+            
+            # Если база уже существует, просто подключаемся
+            logger.info(f"Database {self.database_name} initialized successfully")
+            
         except Exception as e:
             logger.error(f"Database initialization error: {e}")
             raise DatabaseError("Failed to initialize database", e)
@@ -409,101 +488,132 @@ class FinanceDatabase:
     async def get_statistics(
         self,
         user_id: int,
-        start_date: datetime = None,
-        end_date: datetime = None
-    ):
+        days: int = 30
+    ) -> Optional[StatisticsResult]:
         """
-        Получает статистику по транзакциям пользователя за период
+        Получает статистику транзакций пользователя за указанный период
         
-        :param user_id: ID пользователя в Telegram
-        :param start_date: Начальная дата для фильтрации
-        :param end_date: Конечная дата для фильтрации
-        :return: Объект Statistics с подробной статистикой
+        :param user_id: ID пользователя
+        :param days: Количество дней для анализа
+        :return: Объект с результатами статистики или None
         """
-        logger.info(f"Retrieving statistics for user {user_id}")
-        logger.info(f"Date filtering: start_date={start_date}, end_date={end_date}")
-        
         try:
-            # Проверяем кэш
-            cached_stats = self.cache.get_statistics(user_id, start_date, end_date)
-            if cached_stats:
-                return cached_stats
-
-            # Устанавливаем значения по умолчанию для дат
-            if start_date is None:
-                start_date = datetime.now() - timedelta(days=30)
-            if end_date is None:
-                end_date = datetime.now()
-
+            logger.info(f"Получение статистики для пользователя {user_id} за {days} дней")
+            
+            # Получаем транзакции за последние N дней
             async with aiosqlite.connect(self.database_name) as db:
-                # Проверяем существование пользователя и получаем db_user_id
-                async with db.execute(
-                    "SELECT id FROM users WHERE telegram_id = ?",
-                    (user_id,)
-                ) as cursor:
-                    user = await cursor.fetchone()
-                    if not user:
-                        raise ValueError(f"User with telegram_id {user_id} not found")
-                    db_user_id = user[0]
-
-                # Получаем транзакции за период
-                async with db.execute(
-                    """
+                # Вычисляем дату начала периода
+                start_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days)
+                logger.info(f"Начальная дата для выборки: {start_date}")
+                
+                # Проверяем существование пользователя
+                async with db.execute("SELECT COUNT(*) FROM users WHERE telegram_id = ?", (user_id,)) as cursor:
+                    user_count = await cursor.fetchone()
+                    logger.info(f"Количество пользователей с ID {user_id}: {user_count[0]}")
+                    
+                    if user_count[0] == 0:
+                        logger.warning(f"Пользователь {user_id} не найден в базе данных")
+                        return None
+                
+                # Запрос на получение транзакций с ограничением по дате
+                query = '''
                     SELECT 
                         t.id, t.type, t.amount, 
                         c.name AS category, t.description, 
                         t.date, t.user_id
                     FROM transactions t
                     JOIN categories c ON t.category_id = c.id
-                    WHERE t.user_id = ? AND t.date BETWEEN ? AND ?
+                    JOIN users u ON t.user_id = u.id
+                    WHERE u.telegram_id = ? AND t.date >= ?
                     ORDER BY t.date DESC
-                    """,
-                    (db_user_id, start_date.isoformat(), end_date.isoformat())
-                ) as cursor:
-                    transactions = []
-                    total_income = Decimal('0')
-                    total_expense = Decimal('0')
+                '''
+                params = [user_id, start_date.isoformat()]
+                
+                # Выполняем запрос
+                async with db.execute(query, params) as cursor:
+                    rows = await cursor.fetchall()
+                    logger.info(f"Найдено транзакций: {len(rows)}")
 
-                    async for row in cursor:
-                        transaction = Transaction(
-                            id=row[0],
-                            type=row[1],
-                            amount=Decimal(str(row[2])),
-                            category=row[3],
-                            description=row[4],
-                            date=datetime.fromisoformat(row[5]),
-                            user_id=row[6]
-                        )
-                        transactions.append(transaction)
+                # Если транзакций нет, возвращаем None
+                if not rows:
+                    logger.warning(f"Нет транзакций для пользователя {user_id}")
+                    return None
+                
+                # Преобразуем результаты в список транзакций
+                transactions = []
+                for row in rows:
+                    transaction_date = datetime.fromisoformat(row[5])
+                    transaction = Transaction(
+                        id=row[0],
+                        type=row[1],
+                        amount=Decimal(row[2]),
+                        category=row[3],
+                        description=row[4],
+                        date=transaction_date,
+                        user_id=row[6]
+                    )
+                    transactions.append(transaction)
 
-                        # Подсчет общих сумм
-                        if transaction.type == 'income':
-                            total_income += transaction.amount
-                        else:
-                            total_expense += transaction.amount
-
-                # Создаем объект статистики
-                stats = Statistics(
+                # Группируем транзакции по типу и категории
+                income_transactions = [t for t in transactions if t.type == 'income']
+                expense_transactions = [t for t in transactions if t.type == 'expense']
+                
+                # Вычисляем общие суммы
+                total_income = sum(t.amount for t in income_transactions)
+                total_expense = sum(t.amount for t in expense_transactions)
+                
+                logger.info(f"Общий доход: {total_income}, Общий расход: {total_expense}")
+                
+                # Группируем доходы и расходы по категориям
+                income_categories = {}
+                for transaction in income_transactions:
+                    category = translate_category(transaction.category)
+                    income_categories[category] = income_categories.get(category, 0) + transaction.amount
+                
+                expense_categories = {}
+                for transaction in expense_transactions:
+                    category = translate_category(transaction.category)
+                    expense_categories[category] = expense_categories.get(category, 0) + transaction.amount
+                
+                # Создаем детализированный результат с процентами
+                income_details = [
+                    {
+                        'category': category, 
+                        'amount': float(amount), 
+                        'percentage': round(amount / total_income * 100, 1) if total_income > 0 else 0
+                    } 
+                    for category, amount in income_categories.items()
+                ]
+                
+                expense_details = [
+                    {
+                        'category': category, 
+                        'amount': float(amount), 
+                        'percentage': round(amount / total_expense * 100, 1) if total_expense > 0 else 0
+                    } 
+                    for category, amount in expense_categories.items()
+                ]
+                
+                # Сортируем по сумме в убывающем порядке
+                income_details.sort(key=lambda x: x['amount'], reverse=True)
+                expense_details.sort(key=lambda x: x['amount'], reverse=True)
+                
+                # Возвращаем результат
+                result = StatisticsResult(
                     total_income=total_income,
                     total_expense=total_expense,
                     balance=total_income - total_expense,
-                    transactions=transactions
+                    transactions=transactions,
+                    income_details=income_details,
+                    expense_details=expense_details
                 )
-
-                # Сохраняем в кэш
-                self.cache.set_statistics(user_id, stats, start_date, end_date)
-
-                return stats
-
-        except ValueError as e:
-            logger.error(f"Validation error: {str(e)}")
-            raise DatabaseError(str(e))
-        except aiosqlite.Error as e:
-            logger.error(f"Database error in get_statistics: {e}")
-            raise DatabaseError(f"Failed to get statistics: {str(e)}", e)
+                
+                logger.info(f"Статистика для пользователя {user_id} успешно сформирована")
+                return result
+        
         except Exception as e:
-            logger.error(f"Error getting statistics: {e}", exc_info=True)
-            raise DatabaseError("Failed to get statistics", e)
+            logger.error(f"Ошибка при получении статистики для пользователя {user_id}: {e}", exc_info=True)
+            return None
 
     async def get_category_statistics(self,
                                     user_id: int,
@@ -609,24 +719,17 @@ class FinanceDatabase:
                         t.date, t.user_id
                     FROM transactions t
                     JOIN categories c ON t.category_id = c.id
-                    WHERE t.user_id = ?
+                    WHERE t.user_id = ? AND t.date >= ?
+                    ORDER BY t.date DESC
                 '''
-                params = [db_user_id]
+                params = [db_user_id, start_date]
 
                 # Добавляем фильтрацию по дате, если указаны даты
-                if start_date is not None and end_date is not None:
-                    # Включаем транзакции в диапазоне и после начальной даты, но не позже конечной
-                    query += " AND (t.date >= ? AND t.date <= ?)"
-                    params.extend([start_date.isoformat(), end_date.isoformat()])
-                    logger.info(f"Date range filter: {start_date.isoformat()} - {end_date.isoformat()}")
-                elif start_date is not None:
-                    query += " AND t.date >= ?"
-                    params.append(start_date.isoformat())
-                    logger.info(f"Start date filter: {start_date.isoformat()}")
-                elif end_date is not None:
+                if end_date:
                     query += " AND t.date <= ?"
                     params.append(end_date.isoformat())
-                    logger.info(f"End date filter: {end_date.isoformat()}")
+                    logger.info(f"Date range filter: {start_date.isoformat()} - {end_date.isoformat()}")
+                logger.info(f"Date filter: {start_date.isoformat()}")
 
                 # Сортируем по дате в убывающем порядке
                 query += " ORDER BY t.date DESC"
@@ -815,6 +918,185 @@ class FinanceDatabase:
                 date=datetime.fromisoformat(row['date']),
                 user_id=row['user_id']
             )
+
+    async def graph_image(self, user_id: int, days: int = 30) -> Optional[bytes]:
+        """
+        Генерирует подробный график доходов и расходов за указанный период
+        
+        :param user_id: ID пользователя
+        :param days: Количество дней для анализа
+        :return: Байты изображения графика или None
+        """
+        try:
+            # Получаем статистику
+            stats = await self.get_statistics(user_id)
+            
+            # Проверяем наличие транзакций
+            if not stats or not stats.transactions:
+                logging.info(f"Недостаточно данных для генерации графика для пользователя {user_id}")
+                return None
+            
+            # Группируем транзакции по категориям
+            categories_income = {}
+            categories_expense = {}
+            
+            for transaction in stats.transactions:
+                category = str(transaction.category)
+                amount = float(transaction.amount)
+                
+                if transaction.type == 'income':
+                    categories_income[category] = categories_income.get(category, 0) + amount
+                else:
+                    categories_expense[category] = categories_expense.get(category, 0) + amount
+            
+            # Проверяем наличие данных для графиков
+            if not categories_income and not categories_expense:
+                logging.info(f"Нет данных для построения графиков для пользователя {user_id}")
+                return None
+            
+            # Создание графика
+            plt.figure(figsize=(16, 8))
+            plt.suptitle(f'Финансовая статистика за {days} дней', fontsize=16, fontweight='bold')
+            
+            # Subplot для доходов
+            plt.subplot(1, 2, 1)
+            plt.title('Доходы по категориям', fontsize=14)
+            
+            total_income = sum(categories_income.values())
+            income_labels = [f"{cat}\n{val:.0f} руб. ({val/total_income*100:.1f}%)" 
+                             for cat, val in categories_income.items()]
+            
+            plt.pie(
+                list(categories_income.values()), 
+                labels=income_labels, 
+                autopct='%1.1f%%',
+                wedgeprops={'edgecolor': 'white', 'linewidth': 1},
+                colors=plt.cm.Greens(np.linspace(0.4, 0.8, len(categories_income)))
+            )
+            
+            # Subplot для расходов
+            plt.subplot(1, 2, 2)
+            plt.title('Расходы по категориям', fontsize=14)
+            
+            total_expense = sum(categories_expense.values())
+            expense_labels = [f"{cat}\n{val:.0f} руб. ({val/total_expense*100:.1f}%)" 
+                              for cat, val in categories_expense.items()]
+            
+            plt.pie(
+                list(categories_expense.values()), 
+                labels=expense_labels, 
+                autopct='%1.1f%%',
+                wedgeprops={'edgecolor': 'white', 'linewidth': 1},
+                colors=plt.cm.Reds(np.linspace(0.4, 0.8, len(categories_expense)))
+            )
+            
+            # Добавляем общую информацию
+            plt.figtext(0.5, 0.02, 
+                        f"💰 Общий доход: {total_income:.0f} руб. | 💸 Общий расход: {total_expense:.0f} руб. | 💵 Баланс: {total_income-total_expense:.0f} руб.", 
+                        ha='center', fontsize=10, bbox=dict(facecolor='white', alpha=0.5))
+            
+            # Сохраняем график в память
+            buf = io.BytesIO()
+            plt.tight_layout()
+            plt.savefig(buf, format='png', dpi=200)
+            plt.close()
+            
+            # Возвращаем байты изображения
+            chart_data = buf.getvalue()
+            
+            logging.info(f"График для пользователя {user_id} сгенерирован. Размер: {len(chart_data)} байт")
+            
+            return chart_data
+        
+        except Exception as e:
+            logging.error(f"Ошибка при генерации графика: {e}", exc_info=True)
+            return None
+
+    async def generate_statistics_chart(self, user_id: int, days: int = 30) -> Optional[bytes]:
+        """
+        Генерирует график доходов и расходов за указанный период
+        
+        :param user_id: ID пользователя
+        :param days: Количество дней для анализа
+        :return: Байты изображения графика или None
+        """
+        try:
+            # Получаем статистику
+            stats = await self.get_statistics(user_id)
+            
+            # Проверяем наличие транзакций
+            if not stats or not stats.transactions:
+                logging.info(f"Недостаточно данных для генерации графика для пользователя {user_id}")
+                return None
+            
+            # Подготовка данных для графика
+            categories_income = {}
+            categories_expense = {}
+            
+            for transaction in stats.transactions:
+                try:
+                    # Явное преобразование и обработка
+                    category = str(transaction.category)
+                    amount = float(transaction.amount)
+                    
+                    if transaction.type == 'income':
+                        categories_income[category] = categories_income.get(category, 0) + amount
+                    else:
+                        categories_expense[category] = categories_expense.get(category, 0) + amount
+                except Exception as e:
+                    logging.error(f"Ошибка обработки транзакции: {e}, транзакция: {transaction}")
+            
+            # Проверяем наличие данных для графиков
+            if not categories_income and not categories_expense:
+                logging.info(f"Нет данных для построения графиков для пользователя {user_id}")
+                return None
+            
+            # Создание графика
+            plt.figure(figsize=(10, 5))  # Уменьшаем размер для мобильных устройств
+            plt.suptitle(f'Финансовая статистика', fontsize=12)
+            
+            # Счетчик для определения количества subplot
+            subplot_count = 1 if not categories_income or not categories_expense else 2
+            
+            # Добавляем графики только если есть данные
+            if categories_income:
+                plt.subplot(1, subplot_count, 1)
+                plt.title('Доходы')
+                plt.pie(
+                    list(categories_income.values()), 
+                    labels=list(categories_income.keys()), 
+                    autopct='%1.1f%%',
+                    wedgeprops={'edgecolor': 'white'},
+                    colors=plt.cm.Greens(np.linspace(0.4, 0.8, len(categories_income)))
+                )
+            
+            if categories_expense:
+                plt.subplot(1, subplot_count, 2 if categories_income else 1)
+                plt.title('Расходы')
+                plt.pie(
+                    list(categories_expense.values()), 
+                    labels=list(categories_expense.keys()), 
+                    autopct='%1.1f%%',
+                    wedgeprops={'edgecolor': 'white'},
+                    colors=plt.cm.Reds(np.linspace(0.4, 0.8, len(categories_expense)))
+                )
+            
+            # Сохраняем график в память
+            buf = io.BytesIO()
+            plt.tight_layout()
+            plt.savefig(buf, format='png', dpi=150)
+            plt.close()
+            
+            # Возвращаем байты изображения
+            chart_data = buf.getvalue()
+            
+            logging.info(f"График для пользователя {user_id} сгенерирован. Размер: {len(chart_data)} байт")
+            
+            return chart_data
+        
+        except Exception as e:
+            logging.error(f"Ошибка при генерации графика: {e}", exc_info=True)
+            return None
 
 # Создаем глобальный экземпляр базы данных
 db = FinanceDatabase()

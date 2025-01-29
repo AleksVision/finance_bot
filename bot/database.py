@@ -1233,5 +1233,84 @@ class FinanceDatabase:
             async with db.execute(query, params) as cursor:
                 return await cursor.fetchall()
 
+    async def update_notification_settings(self, user_id, notification_type, is_enabled, frequency=None):
+        """
+        Обновление настроек уведомлений для пользователя
+        
+        :param user_id: ID пользователя
+        :param notification_type: Тип уведомления (expense_limit, monthly_report, etc.)
+        :param is_enabled: Включены ли уведомления
+        :param frequency: Частота уведомлений (daily, weekly, monthly)
+        """
+        async with aiosqlite.connect(self.database_name) as db:
+            await db.execute('''
+                INSERT OR REPLACE INTO user_settings 
+                (user_id, setting_name, setting_value, additional_value) 
+                VALUES (?, ?, ?, ?)
+            ''', (
+                user_id, 
+                f'notification_{notification_type}', 
+                'enabled' if is_enabled else 'disabled',
+                frequency or ''
+            ))
+            await db.commit()
+            logger.info(f"Обновлены настройки уведомлений для {user_id}: {notification_type}")
+
+    async def get_notification_settings(self, user_id, notification_type=None):
+        """
+        Получение настроек уведомлений для пользователя
+        
+        :param user_id: ID пользователя
+        :param notification_type: Тип уведомления (опционально)
+        :return: Словарь настроек уведомлений
+        """
+        async with aiosqlite.connect(self.database_name) as db:
+            if notification_type:
+                query = '''
+                    SELECT setting_value, additional_value 
+                    FROM user_settings 
+                    WHERE user_id = ? AND setting_name = ?
+                '''
+                params = [user_id, f'notification_{notification_type}']
+            else:
+                query = '''
+                    SELECT setting_name, setting_value, additional_value 
+                    FROM user_settings 
+                    WHERE user_id = ? AND setting_name LIKE 'notification_%'
+                '''
+                params = [user_id]
+            
+            async with db.execute(query, params) as cursor:
+                results = await cursor.fetchall()
+                
+                if notification_type:
+                    return {
+                        'status': results[0][0] if results else 'disabled',
+                        'frequency': results[0][1] if results else None
+                    }
+                else:
+                    return {
+                        setting.replace('notification_', ''): {
+                            'status': value,
+                            'frequency': freq
+                        }
+                        for setting, value, freq in results
+                    }
+
+    async def get_users_for_notifications(self, notification_type):
+        """
+        Получение пользователей, у которых включены определенные уведомления
+        
+        :param notification_type: Тип уведомления
+        :return: Список ID пользователей
+        """
+        async with aiosqlite.connect(self.database_name) as db:
+            async with db.execute('''
+                SELECT user_id 
+                FROM user_settings 
+                WHERE setting_name = ? AND setting_value = 'enabled'
+            ''', (f'notification_{notification_type}',)) as cursor:
+                return [row[0] for row in await cursor.fetchall()]
+
 # Создаем глобальный экземпляр базы данных
 db = FinanceDatabase()

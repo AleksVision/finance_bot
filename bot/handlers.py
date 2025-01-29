@@ -61,6 +61,7 @@ class SettingsForm(StatesGroup):
     set_report_period = State()
     manage_categories = State()
     add_category = State()
+    notification_settings = State()
 
 class KeyboardFactory:
     @staticmethod
@@ -182,6 +183,55 @@ class KeyboardFactory:
         builder.button(text="🔙 Назад", callback_data="settings_menu")
         
         builder.adjust(2)
+        return builder.as_markup()
+
+    @staticmethod
+    def get_notifications_keyboard():
+        """Клавиатура для настроек уведомлений"""
+        builder = InlineKeyboardBuilder()
+        
+        notifications = [
+            ('expense_limit', 'Лимит расходов'),
+            ('monthly_report', 'Месячный отчет'),
+            ('weekly_summary', 'Недельная сводка')
+        ]
+        
+        for notification_type, label in notifications:
+            builder.button(
+                text=f"🔔 {label}", 
+                callback_data=f"notification_settings_{notification_type}"
+            )
+        
+        builder.button(text="🔙 Назад", callback_data="settings_menu")
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def get_notification_type_keyboard(notification_type):
+        """Клавиатура для настроек конкретного типа уведомлений"""
+        builder = InlineKeyboardBuilder()
+        
+        frequencies = {
+            'expense_limit': ['daily', 'weekly', 'monthly'],
+            'monthly_report': ['monthly'],
+            'weekly_summary': ['weekly']
+        }
+        
+        # Кнопка включения/выключения
+        builder.button(
+            text="✅ Включить", 
+            callback_data=f"notification_toggle_{notification_type}"
+        )
+        
+        # Кнопки частоты (если применимо)
+        for freq in frequencies.get(notification_type, []):
+            builder.button(
+                text=f"🕒 {freq.capitalize()}", 
+                callback_data=f"notification_frequency_{notification_type}_{freq}"
+            )
+        
+        builder.button(text="🔙 Назад", callback_data="notification_settings")
+        builder.adjust(1)
         return builder.as_markup()
 
 class FinanceHandler:
@@ -583,6 +633,106 @@ class FinanceHandler:
             logger.error(f"Ошибка при удалении категории: {e}")
             await callback.answer("❌ Не удалось удалить категорию")
 
+    async def show_notifications_menu(self, callback: CallbackQuery):
+        """Показать меню настроек уведомлений"""
+        try:
+            await callback.message.edit_text(
+                "🔔 Настройки уведомлений\n\n"
+                "Выберите тип уведомлений:",
+                reply_markup=self.keyboard_factory.get_notifications_keyboard()
+            )
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Ошибка при показе меню уведомлений: {e}")
+            await callback.answer("❌ Не удалось открыть настройки уведомлений")
+
+    async def show_notification_type_settings(self, callback: CallbackQuery, state: FSMContext):
+        """Показать настройки конкретного типа уведомлений"""
+        try:
+            notification_type = callback.data.split('_')[-1]
+            
+            # Получаем текущие настройки
+            user_id = callback.from_user.id
+            self.current_notification_settings = await self.db.get_notification_settings(
+                user_id, 
+                notification_type
+            )
+            
+            await state.update_data(notification_type=notification_type)
+            
+            await callback.message.edit_text(
+                f"🔔 Настройки уведомлений: {notification_type}\n\n"
+                f"Текущий статус: {'Включены' if self.current_notification_settings.get('status') == 'enabled' else 'Выключены'}\n"
+                f"Частота: {self.current_notification_settings.get('frequency', 'Не установлена')}",
+                reply_markup=self.keyboard_factory.get_notification_type_keyboard(notification_type)
+            )
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Ошибка при показе настроек уведомлений: {e}")
+            await callback.answer("❌ Не удалось открыть настройки уведомлений")
+
+    async def toggle_notification(self, callback: CallbackQuery, state: FSMContext):
+        """Включение/выключение уведомлений"""
+        try:
+            state_data = await state.get_data()
+            notification_type = state_data.get('notification_type')
+            user_id = callback.from_user.id
+            
+            # Переключаем статус
+            current_status = self.current_notification_settings.get('status', 'disabled')
+            new_status = 'disabled' if current_status == 'enabled' else 'enabled'
+            
+            # Обновляем в базе
+            await self.db.update_notification_settings(
+                user_id, 
+                notification_type, 
+                new_status == 'enabled'
+            )
+            
+            # Обновляем текущие настройки
+            self.current_notification_settings['status'] = new_status
+            
+            await callback.message.edit_text(
+                f"🔔 Настройки уведомлений: {notification_type}\n\n"
+                f"Статус: {'Включены' if new_status == 'enabled' else 'Выключены'}",
+                reply_markup=self.keyboard_factory.get_notification_type_keyboard(notification_type)
+            )
+            await callback.answer(f"Уведомления {'включены' if new_status == 'enabled' else 'выключены'}")
+        except Exception as e:
+            logger.error(f"Ошибка при переключении уведомлений: {e}")
+            await callback.answer("❌ Не удалось изменить настройки уведомлений")
+
+    async def set_notification_frequency(self, callback: CallbackQuery, state: FSMContext):
+        """Установка частоты уведомлений"""
+        try:
+            _, _, notification_type, frequency = callback.data.split('_')
+            user_id = callback.from_user.id
+            
+            # Обновляем в базе
+            await self.db.update_notification_settings(
+                user_id, 
+                notification_type, 
+                True,  # включаем уведомления
+                frequency
+            )
+            
+            # Обновляем текущие настройки
+            self.current_notification_settings = {
+                'status': 'enabled',
+                'frequency': frequency
+            }
+            
+            await callback.message.edit_text(
+                f"🔔 Настройки уведомлений: {notification_type}\n\n"
+                f"Статус: Включены\n"
+                f"Частота: {frequency}",
+                reply_markup=self.keyboard_factory.get_notification_type_keyboard(notification_type)
+            )
+            await callback.answer(f"Частота уведомлений установлена: {frequency}")
+        except Exception as e:
+            logger.error(f"Ошибка при установке частоты уведомлений: {e}")
+            await callback.answer("❌ Не удалось установить частоту уведомлений")
+
 def register_handlers(router: Router):
     handler = FinanceHandler()
 
@@ -660,6 +810,22 @@ def register_handlers(router: Router):
     router.message.register(
         handler.save_expense_limit, 
         SettingsForm.set_expense_limit
+    )
+    router.callback_query.register(
+        handler.show_notifications_menu, 
+        F.data == "settings_notifications"
+    )
+    router.callback_query.register(
+        handler.show_notification_type_settings, 
+        F.data.startswith("notification_settings_")
+    )
+    router.callback_query.register(
+        handler.toggle_notification, 
+        F.data.startswith("notification_toggle_")
+    )
+    router.callback_query.register(
+        handler.set_notification_frequency, 
+        F.data.startswith("notification_frequency_")
     )
 
     # Обработчики категорий

@@ -2,7 +2,7 @@ import logging
 import asyncio
 import signal
 from aiogram import Bot, Dispatcher
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.memory import SimpleMemoryStorage 
 from aiogram.filters import Command
 
 from bot.config import BOT_TOKEN
@@ -61,7 +61,7 @@ async def on_shutdown():
 
 async def main():
     try:
-        # Регистрация хендлеров запуска и остановки
+        # Регистрация хендлеров для запуска и остановки
         dp.startup.register(on_startup)
         dp.shutdown.register(on_shutdown)
         

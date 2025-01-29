@@ -2,7 +2,7 @@
 name = "finance-bot"
 version = "0.1.0"
 description = "Telegram bot for personal finance tracking"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["AleksVision <your.email@example.com>"]
 packages = [
     { include = "bot" }
 ]

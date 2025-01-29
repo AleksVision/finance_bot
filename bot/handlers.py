@@ -3,7 +3,6 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta
@@ -110,6 +109,18 @@ class KeyboardFactory:
         builder.button(text="✅ Подтвердить", callback_data="confirm")
         builder.button(text="❌ Отменить", callback_data="cancel")
         builder.adjust(2)
+        return builder.as_markup()
+
+    @staticmethod
+    def get_statistics_keyboard():
+        """
+        Создание клавиатуры для статистики с новой кнопкой графика
+        """
+        builder = InlineKeyboardBuilder()
+        builder.button(text="📊 За 30 дней", callback_data="stats_30_days")
+        builder.button(text="📈 График", callback_data="show_chart")
+        builder.button(text="🔙 Назад", callback_data="main_menu")
+        builder.adjust(2, 1)
         return builder.as_markup()
 
 class FinanceHandler:
@@ -379,7 +390,7 @@ class FinanceHandler:
             # Отправляем статистику
             await message.answer(
                 message_text, 
-                reply_markup=self.keyboard_factory.get_main_keyboard()
+                reply_markup=self.keyboard_factory.get_statistics_keyboard()
             )
             
             # Логируем запрос статистики

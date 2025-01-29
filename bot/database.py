@@ -1383,43 +1383,25 @@ class FinanceDatabase:
         
         # Получаем настройки периода
         period_settings = await self.get_report_period(user_id)
-        start_day = period_settings['start_day']
-        period_type = period_settings['period_type']
         
-        # Расчет начала и конца текущего периода
-        if period_type == 'monthly':
-            # Определяем начало и конец текущего месяца
-            if current_date.day < start_day:
-                # Если текущая дата раньше дня старта, берем предыдущий месяц
-                current_period_start = datetime(current_date.year, current_date.month, start_day) - timedelta(days=1)
-                current_period_end = datetime(current_date.year, current_date.month, start_day) - timedelta(days=1)
-            else:
-                current_period_start = datetime(current_date.year, current_date.month, start_day)
-                current_period_end = datetime(current_date.year, current_date.month + 1, start_day) - timedelta(days=1)
+        periods = []
+        current_date = current_date
         
-        elif period_type == 'quarterly':
-            # Определяем квартал
-            quarter = (current_date.month - 1) // 3
-            quarter_months = {
-                0: (1, 2, 3),
-                1: (4, 5, 6),
-                2: (7, 8, 9),
-                3: (10, 11, 12)
-            }
+        while current_date >= datetime.now() - timedelta(days=365):
+            report_periods = await self.calculate_report_period(
+                user_id, 
+                current_date
+            )
             
-            first_month = quarter_months[quarter][0]
-            current_period_start = datetime(current_date.year, first_month, start_day)
-            current_period_end = datetime(current_date.year, first_month + 2, start_day) - timedelta(days=1)
+            periods.append({
+                'start': report_periods['current_period_start'],
+                'end': report_periods['current_period_end']
+            })
+            
+            # Переходим к предыдущему периоду
+            current_date = report_periods['previous_period_end']
         
-        else:
-            raise ValueError(f"Неподдерживаемый тип периода: {period_type}")
-        
-        return {
-            'current_period_start': current_period_start,
-            'current_period_end': current_period_end,
-            'previous_period_start': current_period_start - timedelta(days=current_period_end.day),
-            'previous_period_end': current_period_start - timedelta(days=1)
-        }
+        return periods
 
     async def generate_financial_report(self, user_id, period_start, period_end):
         """
@@ -1437,10 +1419,9 @@ class FinanceDatabase:
             # Доходы за период
             async with db.execute('''
                 SELECT 
-                    c.name, 
-                    c.type, 
-                    SUM(t.amount) as total_amount,
-                    COUNT(t.id) as transaction_count
+                    c.name AS category_name, 
+                    SUM(t.amount) AS total_amount, 
+                    COUNT(t.id) AS transaction_count
                 FROM transactions t
                 JOIN user_categories c ON t.category_id = c.id
                 WHERE 
@@ -1455,11 +1436,10 @@ class FinanceDatabase:
             # Расходы за период
             async with db.execute('''
                 SELECT 
-                    c.name, 
-                    c.type, 
-                    SUM(t.amount) as total_amount,
-                    COUNT(t.id) as transaction_count,
-                    AVG(t.amount) as avg_amount
+                    c.name AS category_name, 
+                    SUM(t.amount) AS total_amount, 
+                    AVG(t.amount) AS avg_amount,
+                    COUNT(t.id) AS transaction_count
                 FROM transactions t
                 JOIN user_categories c ON t.category_id = c.id
                 WHERE 
@@ -1474,20 +1454,20 @@ class FinanceDatabase:
             # Общая статистика
             async with db.execute('''
                 SELECT 
-                    c.type,
-                    SUM(t.amount) as total_amount
-                FROM transactions t
-                JOIN user_categories c ON t.category_id = c.id
+                    SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) AS total_income,
+                    SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) AS total_expense
+                FROM transactions 
                 WHERE 
-                    t.user_id = ? AND 
-                    t.date BETWEEN ? AND ?
-                GROUP BY c.type
+                    user_id = ? AND 
+                    date BETWEEN ? AND ?
             ''', (user_id, period_start, period_end)) as cursor:
-                total_stats = await cursor.fetchall()
+                totals = await cursor.fetchone()
+                total_income = totals['total_income'] or 0
+                total_expense = totals['total_expense'] or 0
             
             # Преобразуем результаты
-            total_income = next((row[1] for row in total_stats if row[0] == 'income'), 0)
-            total_expense = next((row[1] for row in total_stats if row[0] == 'expense'), 0)
+            total_income = Decimal(str(total_income))
+            total_expense = Decimal(str(total_expense))
             
             # Анализ лимитов расходов
             expense_limit = await self.get_expense_limit(user_id)
@@ -1503,16 +1483,16 @@ class FinanceDatabase:
                 'income_categories': [
                     {
                         'name': row[0],
-                        'total_amount': row[2],
-                        'transaction_count': row[3]
+                        'total_amount': row[1],
+                        'transaction_count': row[2]
                     } for row in income_categories
                 ],
                 'expense_categories': [
                     {
                         'name': row[0],
-                        'total_amount': row[2],
+                        'total_amount': row[1],
                         'transaction_count': row[3],
-                        'avg_amount': row[4]
+                        'avg_amount': row[2]
                     } for row in expense_categories
                 ],
                 'expense_limit_status': (

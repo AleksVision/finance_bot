@@ -266,6 +266,41 @@ class FinanceDatabase:
                     
                     logger.info("Added default categories")
                     
+                    # Новая таблица для настроек пользователя
+                    await db.execute('''
+                        CREATE TABLE IF NOT EXISTS user_settings (
+                            user_id INTEGER PRIMARY KEY,
+                            default_currency TEXT DEFAULT 'RUB',
+                            monthly_expense_limit REAL DEFAULT NULL,
+                            notification_frequency TEXT DEFAULT 'weekly',
+                            report_period TEXT DEFAULT 'month',
+                            FOREIGN KEY (user_id) REFERENCES users(id)
+                        )
+                    ''')
+                    
+                    # Новая таблица для персональных категорий
+                    await db.execute('''
+                        CREATE TABLE IF NOT EXISTS user_categories (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id INTEGER,
+                            name TEXT,
+                            type TEXT CHECK(type IN ('income', 'expense')),
+                            is_default BOOLEAN DEFAULT 0,
+                            FOREIGN KEY (user_id) REFERENCES users(id)
+                        )
+                    ''')
+                    
+                    # Новая таблица для лимитов по категориям
+                    await db.execute('''
+                        CREATE TABLE IF NOT EXISTS category_limits (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id INTEGER,
+                            category TEXT,
+                            monthly_limit REAL,
+                            FOREIGN KEY (user_id) REFERENCES users(id)
+                        )
+                    ''')
+                    
                     await db.commit()
             
             # Если база уже существует, просто подключаемся
@@ -1097,6 +1132,49 @@ class FinanceDatabase:
         except Exception as e:
             logging.error(f"Ошибка при генерации графика: {e}", exc_info=True)
             return None
+
+    async def get_user_settings(self, user_id):
+        async with aiosqlite.connect(self.database_name) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute('SELECT * FROM user_settings WHERE user_id = ?', (user_id,)) as cursor:
+                settings = await cursor.fetchone()
+                return dict(settings) if settings else None
+
+    async def update_user_settings(self, user_id, **kwargs):
+        async with aiosqlite.connect(self.database_name) as db:
+            # Создаем настройки, если их нет
+            await db.execute('''
+                INSERT OR REPLACE INTO user_settings (user_id, default_currency, monthly_expense_limit, 
+                notification_frequency, report_period)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (
+                user_id, 
+                kwargs.get('default_currency', 'RUB'),
+                kwargs.get('monthly_expense_limit'),
+                kwargs.get('notification_frequency', 'weekly'),
+                kwargs.get('report_period', 'month')
+            ))
+            await db.commit()
+
+    async def add_user_category(self, user_id, name, category_type):
+        async with aiosqlite.connect(self.database_name) as db:
+            await db.execute('''
+                INSERT INTO user_categories (user_id, name, type) 
+                VALUES (?, ?, ?)
+            ''', (user_id, name, category_type))
+            await db.commit()
+
+    async def get_user_categories(self, user_id, category_type=None):
+        async with aiosqlite.connect(self.database_name) as db:
+            query = 'SELECT * FROM user_categories WHERE user_id = ?'
+            params = [user_id]
+            
+            if category_type:
+                query += ' AND type = ?'
+                params.append(category_type)
+            
+            async with db.execute(query, params) as cursor:
+                return await cursor.fetchall()
 
 # Создаем глобальный экземпляр базы данных
 db = FinanceDatabase()

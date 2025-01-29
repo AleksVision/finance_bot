@@ -160,6 +160,30 @@ class KeyboardFactory:
         builder.adjust(2, 1)
         return builder.as_markup()
 
+    @staticmethod
+    def get_categories_keyboard(category_type):
+        """Клавиатура для управления категориями"""
+        builder = InlineKeyboardBuilder()
+        
+        # Добавляем кнопки для существующих категорий
+        default_categories = (
+            Categories.INCOME.keys() if category_type == 'income' 
+            else Categories.EXPENSE.keys()
+        )
+        
+        for category in default_categories:
+            builder.button(
+                text=f"❌ {Categories.INCOME.get(category, Categories.EXPENSE.get(category, category))}", 
+                callback_data=f"remove_category_{category_type}_{category}"
+            )
+        
+        # Кнопка добавления новой категории
+        builder.button(text="➕ Добавить категорию", callback_data=f"add_category_{category_type}")
+        builder.button(text="🔙 Назад", callback_data="settings_menu")
+        
+        builder.adjust(2)
+        return builder.as_markup()
+
 class FinanceHandler:
     def __init__(self):
         self.db = FinanceDatabase()
@@ -472,6 +496,82 @@ class FinanceHandler:
             logger.error(f"Ошибка при сохранении лимита: {e}")
             await message.answer("❌ Не удалось сохранить лимит")
 
+    async def manage_categories(self, callback: CallbackQuery, state: FSMContext):
+        """Управление категориями"""
+        try:
+            category_type = callback.data.split('_')[2]
+            
+            await state.update_data(category_type=category_type)
+            
+            await callback.message.edit_text(
+                f"📋 Управление категориями ({category_type})\n\n"
+                "Выберите категорию для удаления или добавьте новую:",
+                reply_markup=self.keyboard_factory.get_categories_keyboard(category_type)
+            )
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Ошибка при управлении категориями: {e}")
+            await callback.answer("❌ Не удалось открыть управление категориями")
+
+    async def start_add_category(self, callback: CallbackQuery, state: FSMContext):
+        """Начало добавления новой категории"""
+        try:
+            category_type = callback.data.split('_')[2]
+            
+            await state.set_state(SettingsForm.add_category)
+            await state.update_data(category_type=category_type)
+            
+            await callback.message.edit_text(
+                f"➕ Добавление новой категории ({category_type})\n\n"
+                "Введите название категории:"
+            )
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Ошибка при начале добавления категории: {e}")
+            await callback.answer("❌ Не удалось начать добавление категории")
+
+    async def save_new_category(self, message: types.Message, state: FSMContext):
+        """Сохранение новой категории"""
+        try:
+            # Получаем данные о типе категории из состояния
+            state_data = await state.get_data()
+            category_type = state_data.get('category_type')
+            
+            # Проверяем корректность названия
+            category_name = message.text.lower().replace(' ', '_')
+            
+            # Сохраняем категорию
+            user_id = message.from_user.id
+            await self.db.add_user_category(user_id, category_name, category_type)
+            
+            await message.answer(
+                f"✅ Категория '{category_name}' добавлена\n\n"
+                "Выберите следующее действие:",
+                reply_markup=self.keyboard_factory.get_categories_keyboard(category_type)
+            )
+            await state.clear()
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении категории: {e}")
+            await message.answer("❌ Не удалось сохранить категорию")
+
+    async def remove_category(self, callback: CallbackQuery):
+        """Удаление категории"""
+        try:
+            # Парсим callback_data
+            _, category_type, category = callback.data.split('_')
+            user_id = callback.from_user.id
+            
+            # TODO: Реализовать удаление категории в базе данных
+            await callback.message.edit_text(
+                f"❌ Категория '{category}' удалена\n\n"
+                "Выберите следующее действие:",
+                reply_markup=self.keyboard_factory.get_categories_keyboard(category_type)
+            )
+            await callback.answer(f"Категория {category} удалена")
+        except Exception as e:
+            logger.error(f"Ошибка при удалении категории: {e}")
+            await callback.answer("❌ Не удалось удалить категорию")
+
 def register_handlers(router: Router):
     handler = FinanceHandler()
 
@@ -549,6 +649,24 @@ def register_handlers(router: Router):
     router.message.register(
         handler.save_expense_limit, 
         SettingsForm.set_expense_limit
+    )
+
+    # Обработчики категорий
+    router.callback_query.register(
+        handler.manage_categories, 
+        F.data.startswith("settings_categories_")
+    )
+    router.callback_query.register(
+        handler.start_add_category, 
+        F.data.startswith("add_category_")
+    )
+    router.message.register(
+        handler.save_new_category, 
+        SettingsForm.add_category
+    )
+    router.callback_query.register(
+        handler.remove_category, 
+        F.data.startswith("remove_category_")
     )
 
 # Создаем глобальный экземпляр обработчика

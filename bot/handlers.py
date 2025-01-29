@@ -52,6 +52,16 @@ class FinanceForm(StatesGroup):
     waiting_for_category = State()
     waiting_for_amount = State()
 
+class SettingsForm(StatesGroup):
+    """Состояния для работы с настройками"""
+    settings_menu = State()
+    choose_currency = State()
+    set_expense_limit = State()
+    set_notification_frequency = State()
+    set_report_period = State()
+    manage_categories = State()
+    add_category = State()
+
 class KeyboardFactory:
     @staticmethod
     def get_main_keyboard():
@@ -124,6 +134,30 @@ class KeyboardFactory:
         builder.button(text="📊 Показать статистику", callback_data="show_statistics")
         builder.button(text="📈 Показать график", callback_data="show_chart")
         builder.adjust(2)
+        return builder.as_markup()
+
+    @staticmethod
+    def get_settings_keyboard():
+        """Клавиатура для настроек"""
+        builder = InlineKeyboardBuilder()
+        builder.button(text="💱 Валюта", callback_data="settings_currency")
+        builder.button(text="💸 Лимит расходов", callback_data="settings_expense_limit")
+        builder.button(text="🔔 Уведомления", callback_data="settings_notifications")
+        builder.button(text="📊 Период отчета", callback_data="settings_report_period")
+        builder.button(text="📋 Категории", callback_data="settings_categories")
+        builder.button(text="🏠 Главное меню", callback_data="main_menu")
+        builder.adjust(2, 2)
+        return builder.as_markup()
+
+    @staticmethod
+    def get_currency_keyboard():
+        """Клавиатура выбора валюты"""
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🇷🇺 Рубль (RUB)", callback_data="currency_RUB")
+        builder.button(text="🇺🇸 Доллар (USD)", callback_data="currency_USD")
+        builder.button(text="🇪🇺 Евро (EUR)", callback_data="currency_EUR")
+        builder.button(text="🔙 Назад", callback_data="settings_menu")
+        builder.adjust(2, 1)
         return builder.as_markup()
 
 class FinanceHandler:
@@ -375,6 +409,69 @@ class FinanceHandler:
             )
             await callback.answer()
 
+    async def show_settings(self, message: types.Message):
+        """Показать меню настроек"""
+        try:
+            await message.answer(
+                "⚙️ Настройки бота\n\n"
+                "Выберите, что хотите настроить:",
+                reply_markup=self.keyboard_factory.get_settings_keyboard()
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при открытии настроек: {e}")
+            await message.answer("❌ Не удалось открыть настройки. Попробуйте позже.")
+
+    async def process_currency_settings(self, callback: CallbackQuery, state: FSMContext):
+        """Обработка выбора валюты"""
+        try:
+            currency = callback.data.split('_')[1]
+            user_id = callback.from_user.id
+            
+            await self.db.update_user_settings(user_id, default_currency=currency)
+            
+            await callback.message.edit_text(
+                f"💱 Валюта по умолчанию установлена: {currency}\n\n"
+                "Выберите следующее действие:",
+                reply_markup=self.keyboard_factory.get_settings_keyboard()
+            )
+            await callback.answer(f"Валюта изменена на {currency}")
+        except Exception as e:
+            logger.error(f"Ошибка при смене валюты: {e}")
+            await callback.answer("❌ Не удалось изменить валюту")
+
+    async def process_expense_limit(self, callback: CallbackQuery, state: FSMContext):
+        """Начало установки лимита расходов"""
+        try:
+            await state.set_state(SettingsForm.set_expense_limit)
+            await callback.message.edit_text(
+                "💸 Введите месячный лимит расходов (число):\n\n"
+                "Например: 50000"
+            )
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Ошибка при настройке лимита: {e}")
+            await callback.answer("❌ Не удалось начать настройку лимита")
+
+    async def save_expense_limit(self, message: types.Message, state: FSMContext):
+        """Сохранение лимита расходов"""
+        try:
+            limit = float(message.text)
+            user_id = message.from_user.id
+            
+            await self.db.update_user_settings(user_id, monthly_expense_limit=limit)
+            
+            await message.answer(
+                f"✅ Месячный лимит расходов установлен: {limit} руб.\n\n"
+                "Выберите следующее действие:",
+                reply_markup=self.keyboard_factory.get_settings_keyboard()
+            )
+            await state.clear()
+        except ValueError:
+            await message.answer("❌ Введите корректное число")
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении лимита: {e}")
+            await message.answer("❌ Не удалось сохранить лимит")
+
 def register_handlers(router: Router):
     handler = FinanceHandler()
 
@@ -434,6 +531,24 @@ def register_handlers(router: Router):
     router.callback_query.register(
         handler.process_show_chart,
         F.data == "show_chart"
+    )
+
+    # Обработчики настроек
+    router.message.register(
+        handler.show_settings, 
+        F.text == "⚙️ Настройки"
+    )
+    router.callback_query.register(
+        handler.process_currency_settings, 
+        F.data.startswith("currency_")
+    )
+    router.callback_query.register(
+        handler.process_expense_limit, 
+        F.data == "settings_expense_limit"
+    )
+    router.message.register(
+        handler.save_expense_limit, 
+        SettingsForm.set_expense_limit
     )
 
 # Создаем глобальный экземпляр обработчика

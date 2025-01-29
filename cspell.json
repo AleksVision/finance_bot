@@ -1,0 +1,34 @@
+{
+    "version": "0.2",
+    "language": "en,ru",
+    "words": [
+        "levelname",
+        "lastrowid",
+        "aiogram",
+        "aiosqlite",
+        "dotenv",
+        "dateutil",
+        "pytz",
+        "structlog",
+        "cachetools",
+        "mypy",
+        "pytest",
+        "asyncio",
+        "addinivalue",
+        "autouse",
+        "pycache",
+        "pydantic",
+        "testpaths",
+        "addopts",
+        "repr"
+    ],
+    "ignoreWords": [
+        "Инвалидация",
+        "Инвалидируем",
+        "хендлеры",
+        "хендлеров",
+        "поллинга",
+        "Фикстура"
+    ],
+    "ignorePaths": []
+}

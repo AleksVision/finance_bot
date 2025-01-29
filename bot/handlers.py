@@ -62,6 +62,7 @@ class SettingsForm(StatesGroup):
     manage_categories = State()
     add_category = State()
     notification_settings = State()
+    report_period_settings = State()
 
 class KeyboardFactory:
     @staticmethod
@@ -232,6 +233,42 @@ class KeyboardFactory:
         
         builder.button(text="🔙 Назад", callback_data="notification_settings")
         builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def get_report_period_keyboard():
+        """Клавиатура для выбора периода отчетности"""
+        builder = InlineKeyboardBuilder()
+        
+        periods = [
+            ('monthly', 'Ежемесячный'),
+            ('quarterly', 'Ежеквартальный')
+        ]
+        
+        for period_type, label in periods:
+            builder.button(
+                text=f"📅 {label}", 
+                callback_data=f"report_period_{period_type}"
+            )
+        
+        builder.button(text="🔙 Назад", callback_data="settings_menu")
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def get_report_period_start_keyboard(period_type):
+        """Клавиатура для выбора дня начала периода"""
+        builder = InlineKeyboardBuilder()
+        
+        # Создаем кнопки для дней начала периода
+        for day in range(1, 29):
+            builder.button(
+                text=f"📆 {day} число", 
+                callback_data=f"report_period_start_{period_type}_{day}"
+            )
+        
+        builder.button(text="🔙 Назад", callback_data="settings_report_period")
+        builder.adjust(7)
         return builder.as_markup()
 
 class FinanceHandler:
@@ -733,6 +770,64 @@ class FinanceHandler:
             logger.error(f"Ошибка при установке частоты уведомлений: {e}")
             await callback.answer("❌ Не удалось установить частоту уведомлений")
 
+    async def show_report_period_menu(self, callback: CallbackQuery):
+        """Показать меню выбора периода отчетности"""
+        try:
+            # Получаем текущие настройки периода
+            user_id = callback.from_user.id
+            current_settings = await self.db.get_report_period(user_id)
+            
+            await callback.message.edit_text(
+                "📅 Настройка периода отчетности\n\n"
+                f"Текущий период: {current_settings['period_type'].capitalize()}\n"
+                f"Начало периода: {current_settings['start_day']} число",
+                reply_markup=self.keyboard_factory.get_report_period_keyboard()
+            )
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Ошибка при показе меню периода отчетности: {e}")
+            await callback.answer("❌ Не удалось открыть настройки периода")
+
+    async def select_report_period_type(self, callback: CallbackQuery, state: FSMContext):
+        """Выбор типа периода отчетности"""
+        try:
+            period_type = callback.data.split('_')[-1]
+            
+            await state.update_data(report_period_type=period_type)
+            
+            await callback.message.edit_text(
+                f"📅 Период: {period_type.capitalize()}\n\n"
+                "Выберите день начала периода:",
+                reply_markup=self.keyboard_factory.get_report_period_start_keyboard(period_type)
+            )
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Ошибка при выборе типа периода: {e}")
+            await callback.answer("❌ Не удалось выбрать период")
+
+    async def save_report_period(self, callback: CallbackQuery, state: FSMContext):
+        """Сохранение настроек периода отчетности"""
+        try:
+            state_data = await state.get_data()
+            period_type = state_data.get('report_period_type')
+            start_day = int(callback.data.split('_')[-1])
+            user_id = callback.from_user.id
+            
+            # Сохраняем настройки
+            await self.db.update_report_period(user_id, start_day, period_type)
+            
+            await callback.message.edit_text(
+                "✅ Период отчетности обновлен\n\n"
+                f"Тип: {period_type.capitalize()}\n"
+                f"Начало периода: {start_day} число",
+                reply_markup=self.keyboard_factory.get_settings_keyboard()
+            )
+            await callback.answer("Период отчетности сохранен")
+            await state.clear()
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении периода отчетности: {e}")
+            await callback.answer("❌ Не удалось сохранить период")
+
 def register_handlers(router: Router):
     handler = FinanceHandler()
 
@@ -826,6 +921,18 @@ def register_handlers(router: Router):
     router.callback_query.register(
         handler.set_notification_frequency, 
         F.data.startswith("notification_frequency_")
+    )
+    router.callback_query.register(
+        handler.show_report_period_menu, 
+        F.data == "settings_report_period"
+    )
+    router.callback_query.register(
+        handler.select_report_period_type, 
+        F.data.startswith("report_period_")
+    )
+    router.callback_query.register(
+        handler.save_report_period, 
+        F.data.startswith("report_period_start_")
     )
 
     # Обработчики категорий

@@ -1312,5 +1312,114 @@ class FinanceDatabase:
             ''', (f'notification_{notification_type}',)) as cursor:
                 return [row[0] for row in await cursor.fetchall()]
 
+    async def update_report_period(self, user_id, start_day=1, period_type='monthly'):
+        """
+        Обновление настроек периода отчетности
+        
+        :param user_id: ID пользователя
+        :param start_day: День начала периода (1-28)
+        :param period_type: Тип периода (monthly, quarterly, custom)
+        """
+        async with aiosqlite.connect(self.database_name) as db:
+            # Проверяем корректность дня
+            if not (1 <= start_day <= 28):
+                raise ValueError("День должен быть от 1 до 28")
+            
+            # Сохраняем настройки периода отчетности
+            await db.execute('''
+                INSERT OR REPLACE INTO user_settings 
+                (user_id, setting_name, setting_value, additional_value) 
+                VALUES (?, ?, ?, ?)
+            ''', (
+                user_id, 
+                'report_period', 
+                period_type,
+                str(start_day)
+            ))
+            
+            await db.commit()
+            logger.info(f"Обновлен период отчетности для {user_id}: {period_type}, начало: {start_day}")
+
+    async def get_report_period(self, user_id):
+        """
+        Получение настроек периода отчетности
+        
+        :param user_id: ID пользователя
+        :return: Словарь с настройками периода отчетности
+        """
+        async with aiosqlite.connect(self.database_name) as db:
+            async with db.execute('''
+                SELECT setting_value, additional_value 
+                FROM user_settings 
+                WHERE user_id = ? AND setting_name = 'report_period'
+            ''', (user_id,)) as cursor:
+                result = await cursor.fetchone()
+                
+                # Значения по умолчанию
+                if not result:
+                    return {
+                        'period_type': 'monthly',
+                        'start_day': 1
+                    }
+                
+                return {
+                    'period_type': result[0],
+                    'start_day': int(result[1])
+                }
+
+    async def calculate_report_period(self, user_id, current_date=None):
+        """
+        Расчет текущего и предыдущего периода отчетности
+        
+        :param user_id: ID пользователя
+        :param current_date: Текущая дата (по умолчанию - текущая)
+        :return: Словарь с датами начала и конца текущего и предыдущего периодов
+        """
+        from datetime import datetime, timedelta
+        
+        # Используем текущую дату, если не передана
+        if current_date is None:
+            current_date = datetime.now()
+        
+        # Получаем настройки периода
+        period_settings = await self.get_report_period(user_id)
+        start_day = period_settings['start_day']
+        period_type = period_settings['period_type']
+        
+        # Расчет начала и конца текущего периода
+        if period_type == 'monthly':
+            # Определяем начало и конец текущего месяца
+            if current_date.day < start_day:
+                # Если текущая дата раньше дня старта, берем предыдущий месяц
+                current_period_start = datetime(current_date.year, current_date.month, start_day) - timedelta(days=1)
+                current_period_end = datetime(current_date.year, current_date.month, start_day) - timedelta(days=1)
+            else:
+                current_period_start = datetime(current_date.year, current_date.month, start_day)
+                current_period_end = datetime(current_date.year, current_date.month + 1, start_day) - timedelta(days=1)
+        
+        elif period_type == 'quarterly':
+            # Определяем квартал
+            quarter = (current_date.month - 1) // 3
+            quarter_months = {
+                0: (1, 2, 3),
+                1: (4, 5, 6),
+                2: (7, 8, 9),
+                3: (10, 11, 12)
+            }
+            
+            first_month = quarter_months[quarter][0]
+            current_period_start = datetime(current_date.year, first_month, start_day)
+            current_period_end = datetime(current_date.year, first_month + 2, start_day) - timedelta(days=1)
+        
+        else:
+            raise ValueError(f"Неподдерживаемый тип периода: {period_type}")
+        
+        return {
+            'current_period_start': current_period_start,
+            'current_period_end': current_period_end,
+            'previous_period_start': current_period_start - timedelta(days=current_period_end.day),
+            'previous_period_end': current_period_start - timedelta(days=1)
+        }
+
 # Создаем глобальный экземпляр базы данных
 db = FinanceDatabase()

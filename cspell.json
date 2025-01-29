@@ -26,6 +26,29 @@
         "Запушьте",
         "Логируем",
         "Мокаем",
+<<<<<<< HEAD
+=======
+        "Инвалидация",
+        "Инвалидируем",
+        "dateutil",
+        "pytz",
+        "хендлеров",
+        "Хендлеров",
+        "поллинга",
+        "Поллинга",
+        "pycache",
+        "pydantic",
+        "repr",
+        "addinivalue",
+        "autouse",
+        "testpaths",
+        "addopts",
+        "structlog",
+        "хендлеров",
+        "поллинга"
+    ],
+    "ignoreWords": [
+>>>>>>> f0703d875c19494d9b6433598ebe239a613bb162
         "Инвалидация",
         "Инвалидируем",
         "Валидация",
@@ -47,9 +70,18 @@
         "поллинг",
 "Поллинг"
     ],
+<<<<<<< HEAD
     "allowCompoundWords": true,
     "ignorePaths": [
         "**/node_modules/**",
         "**/.git/**"
     ]
 }
+=======
+    "ignorePaths": [
+        "**/node_modules/**",
+        "**/.git/**"
+    ],
+    "allowCompoundWords": true
+}
+>>>>>>> f0703d875c19494d9b6433598ebe239a613bb162

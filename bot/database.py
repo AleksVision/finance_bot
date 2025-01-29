@@ -1421,5 +1421,153 @@ class FinanceDatabase:
             'previous_period_end': current_period_start - timedelta(days=1)
         }
 
+    async def generate_financial_report(self, user_id, period_start, period_end):
+        """
+        Генерация финансового отчета за указанный период
+        
+        :param user_id: ID пользователя
+        :param period_start: Начало периода
+        :param period_end: Конец периода
+        :return: Словарь с финансовой статистикой
+        """
+        async with aiosqlite.connect(self.database_name) as db:
+            # Получаем основную валюту пользователя
+            user_currency = await self.get_user_currency(user_id)
+            
+            # Доходы за период
+            async with db.execute('''
+                SELECT 
+                    c.name, 
+                    c.type, 
+                    SUM(t.amount) as total_amount,
+                    COUNT(t.id) as transaction_count
+                FROM transactions t
+                JOIN user_categories c ON t.category_id = c.id
+                WHERE 
+                    t.user_id = ? AND 
+                    c.type = 'income' AND
+                    t.date BETWEEN ? AND ?
+                GROUP BY c.name
+                ORDER BY total_amount DESC
+            ''', (user_id, period_start, period_end)) as cursor:
+                income_categories = await cursor.fetchall()
+            
+            # Расходы за период
+            async with db.execute('''
+                SELECT 
+                    c.name, 
+                    c.type, 
+                    SUM(t.amount) as total_amount,
+                    COUNT(t.id) as transaction_count,
+                    AVG(t.amount) as avg_amount
+                FROM transactions t
+                JOIN user_categories c ON t.category_id = c.id
+                WHERE 
+                    t.user_id = ? AND 
+                    c.type = 'expense' AND
+                    t.date BETWEEN ? AND ?
+                GROUP BY c.name
+                ORDER BY total_amount DESC
+            ''', (user_id, period_start, period_end)) as cursor:
+                expense_categories = await cursor.fetchall()
+            
+            # Общая статистика
+            async with db.execute('''
+                SELECT 
+                    c.type,
+                    SUM(t.amount) as total_amount
+                FROM transactions t
+                JOIN user_categories c ON t.category_id = c.id
+                WHERE 
+                    t.user_id = ? AND 
+                    t.date BETWEEN ? AND ?
+                GROUP BY c.type
+            ''', (user_id, period_start, period_end)) as cursor:
+                total_stats = await cursor.fetchall()
+            
+            # Преобразуем результаты
+            total_income = next((row[1] for row in total_stats if row[0] == 'income'), 0)
+            total_expense = next((row[1] for row in total_stats if row[0] == 'expense'), 0)
+            
+            # Анализ лимитов расходов
+            expense_limit = await self.get_expense_limit(user_id)
+            
+            return {
+                'currency': user_currency,
+                'period_start': period_start,
+                'period_end': period_end,
+                'total_income': total_income,
+                'total_expense': total_expense,
+                'balance': total_income - total_expense,
+                'expense_limit': expense_limit,
+                'income_categories': [
+                    {
+                        'name': row[0],
+                        'total_amount': row[2],
+                        'transaction_count': row[3]
+                    } for row in income_categories
+                ],
+                'expense_categories': [
+                    {
+                        'name': row[0],
+                        'total_amount': row[2],
+                        'transaction_count': row[3],
+                        'avg_amount': row[4]
+                    } for row in expense_categories
+                ],
+                'expense_limit_status': (
+                    'exceeded' if total_expense > expense_limit 
+                    else 'warning' if total_expense > expense_limit * 0.8 
+                    else 'normal'
+                )
+            }
+
+    async def get_financial_report_periods(self, user_id):
+        """
+        Получение доступных периодов для финансовых отчетов
+        
+        :param user_id: ID пользователя
+        :return: Список периодов с датами
+        """
+        async with aiosqlite.connect(self.database_name) as db:
+            async with db.execute('''
+                SELECT 
+                    MIN(date) as earliest_date,
+                    MAX(date) as latest_date
+                FROM transactions
+                WHERE user_id = ?
+            ''', (user_id,)) as cursor:
+                result = await cursor.fetchone()
+                
+                if not result or result[0] is None:
+                    return []
+                
+                from datetime import datetime, timedelta
+                
+                earliest_date = datetime.strptime(result[0], '%Y-%m-%d')
+                latest_date = datetime.strptime(result[1], '%Y-%m-%d')
+                
+                # Получаем настройки периода
+                period_settings = await self.get_report_period(user_id)
+                
+                periods = []
+                current_date = latest_date
+                
+                while current_date >= earliest_date:
+                    report_periods = await self.calculate_report_period(
+                        user_id, 
+                        current_date
+                    )
+                    
+                    periods.append({
+                        'start': report_periods['current_period_start'],
+                        'end': report_periods['current_period_end']
+                    })
+                    
+                    # Переходим к предыдущему периоду
+                    current_date = report_periods['previous_period_end']
+                
+                return periods
+
 # Создаем глобальный экземпляр базы данных
 db = FinanceDatabase()

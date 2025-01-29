@@ -147,6 +147,7 @@ class KeyboardFactory:
         builder.button(text="🔔 Уведомления", callback_data="settings_notifications")
         builder.button(text="📊 Период отчета", callback_data="settings_report_period")
         builder.button(text="📋 Категории", callback_data="settings_categories")
+        builder.button(text="📈 Просмотр отчетов", callback_data="show_report_periods")
         builder.button(text="🏠 Главное меню", callback_data="main_menu")
         builder.adjust(2, 2)
         return builder.as_markup()
@@ -269,6 +270,35 @@ class KeyboardFactory:
         
         builder.button(text="🔙 Назад", callback_data="settings_report_period")
         builder.adjust(7)
+        return builder.as_markup()
+
+    @staticmethod
+    def get_report_periods_keyboard(periods):
+        """Клавиатура для выбора периода отчета"""
+        builder = InlineKeyboardBuilder()
+        
+        for i, period in enumerate(periods, 1):
+            start = period['start'].strftime('%d.%m.%Y')
+            end = period['end'].strftime('%d.%m.%Y')
+            builder.button(
+                text=f"📊 {start} - {end}", 
+                callback_data=f"generate_report_{i-1}"
+            )
+        
+        builder.button(text="🔙 Назад", callback_data="settings_menu")
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def get_report_actions_keyboard(period_index):
+        """Клавиатура действий для отчета"""
+        builder = InlineKeyboardBuilder()
+        
+        builder.button(text="📊 Диаграмма", callback_data=f"report_chart_{period_index}")
+        builder.button(text="💾 Сохранить PDF", callback_data=f"report_pdf_{period_index}")
+        builder.button(text="🔙 Назад", callback_data="settings_report_periods")
+        
+        builder.adjust(2, 1)
         return builder.as_markup()
 
 class FinanceHandler:
@@ -828,6 +858,95 @@ class FinanceHandler:
             logger.error(f"Ошибка при сохранении периода отчетности: {e}")
             await callback.answer("❌ Не удалось сохранить период")
 
+    async def show_report_periods(self, callback: CallbackQuery):
+        """Показать доступные периоды для отчетов"""
+        try:
+            user_id = callback.from_user.id
+            
+            # Получаем доступные периоды
+            periods = await self.db.get_financial_report_periods(user_id)
+            
+            if not periods:
+                await callback.message.edit_text(
+                    "❌ У вас пока нет транзакций для создания отчета",
+                    reply_markup=self.keyboard_factory.settings_menu()
+                )
+                return
+            
+            await callback.message.edit_text(
+                "📊 Выберите период для отчета:",
+                reply_markup=self.keyboard_factory.get_report_periods_keyboard(periods)
+            )
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Ошибка при показе периодов отчета: {e}")
+            await callback.answer("❌ Не удалось получить периоды отчета")
+
+    async def generate_financial_report(self, callback: CallbackQuery):
+        """Генерация финансового отчета"""
+        try:
+            # Получаем индекс периода из callback_data
+            period_index = int(callback.data.split('_')[-1])
+            user_id = callback.from_user.id
+            
+            # Получаем доступные периоды
+            periods = await self.db.get_financial_report_periods(user_id)
+            selected_period = periods[period_index]
+            
+            # Генерируем отчет
+            report = await self.db.generate_financial_report(
+                user_id, 
+                selected_period['start'].strftime('%Y-%m-%d'), 
+                selected_period['end'].strftime('%Y-%m-%d')
+            )
+            
+            # Форматируем отчет
+            report_text = self.format_financial_report(report)
+            
+            await callback.message.edit_text(
+                report_text,
+                reply_markup=self.keyboard_factory.get_report_actions_keyboard(period_index)
+            )
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Ошибка при генерации финансового отчета: {e}")
+            await callback.answer("❌ Не удалось сгенерировать отчет")
+
+    def format_financial_report(self, report):
+        """Форматирование финансового отчета"""
+        # Заголовок
+        report_text = f"📊 Финансовый отчет\n"
+        report_text += f"Период: {report['period_start'].strftime('%d.%m.%Y')} - {report['period_end'].strftime('%d.%m.%Y')}\n"
+        report_text += f"Валюта: {report['currency']}\n\n"
+        
+        # Общая статистика
+        report_text += "💰 Общая статистика:\n"
+        report_text += f"Доход: {report['total_income']:.2f}\n"
+        report_text += f"Расход: {report['total_expense']:.2f}\n"
+        report_text += f"Баланс: {report['balance']:.2f}\n\n"
+        
+        # Лимит расходов
+        report_text += "🚨 Лимит расходов:\n"
+        report_text += f"Установленный лимит: {report['expense_limit']:.2f}\n"
+        status_map = {
+            'exceeded': "❌ Превышен",
+            'warning': "⚠️ Приближается к лимиту",
+            'normal': "✅ В норме"
+        }
+        report_text += f"Статус: {status_map[report['expense_limit_status']]}\n\n"
+        
+        # Доходы по категориям
+        report_text += "📈 Доходы по категориям:\n"
+        for category in report['income_categories']:
+            report_text += f"• {category['name']}: {category['total_amount']:.2f} ({category['transaction_count']} транзакций)\n"
+        
+        # Расходы по категориям
+        report_text += "\n📉 Расходы по категориям:\n"
+        for category in report['expense_categories']:
+            report_text += f"• {category['name']}: {category['total_amount']:.2f} (ср. {category['avg_amount']:.2f}, {category['transaction_count']} транзакций)\n"
+        
+        return report_text
+
 def register_handlers(router: Router):
     handler = FinanceHandler()
 
@@ -951,6 +1070,16 @@ def register_handlers(router: Router):
     router.callback_query.register(
         handler.remove_category, 
         F.data.startswith("remove_category_")
+    )
+
+    # Обработчики отчетов
+    router.callback_query.register(
+        handler.show_report_periods, 
+        F.data == "show_report_periods"
+    )
+    router.callback_query.register(
+        handler.generate_financial_report, 
+        F.data.startswith("generate_report_")
     )
 
 # Создаем глобальный экземпляр обработчика
